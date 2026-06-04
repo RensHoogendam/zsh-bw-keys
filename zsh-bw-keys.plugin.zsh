@@ -19,25 +19,31 @@ bw-key-register() {
 }
 
 _bw_keys_ensure_session() {
-  if [[ -z "${BW_SESSION:-}" ]]; then
-    local _session_file="/tmp/.bw_session"
-    if [[ -f "$_session_file" ]]; then
-      BW_SESSION="$(cat "$_session_file")"
-      export BW_SESSION
-    fi
+  local _session_file="/tmp/.bw_session"
+
+  command -v bw >/dev/null || {
+    echo -e "\e[1;31m✗ Bitwarden CLI not installed (brew install bitwarden-cli)\e[0m" >&2
+    return 1
+  }
+
+  if [[ -z "${BW_SESSION:-}" && -f "$_session_file" ]]; then
+    BW_SESSION="$(cat "$_session_file")"
+    export BW_SESSION
   fi
 
-  if [[ -z "${BW_SESSION:-}" ]]; then
-    command -v bw >/dev/null || {
-      echo -e "\e[1;31m✗ Bitwarden CLI not installed (brew install bitwarden-cli)\e[0m" >&2
-      return 1
-    }
+  # Validate the session — it goes stale after `bw lock`, logout, etc.
+  if [[ -n "${BW_SESSION:-}" ]]; then
+    bw unlock --check --session "$BW_SESSION" >/dev/null 2>&1 && return 0
+    echo -e "\e[1;33m⚠ Cached Bitwarden session is stale — re-unlocking...\e[0m" >&2
+    unset BW_SESSION
+    rm -f "$_session_file"
+  else
     echo -e "\e[1;33m🔒 Bitwarden vault locked — unlocking...\e[0m" >&2
-    BW_SESSION="$(bw unlock --raw)" || return 1
-    export BW_SESSION
-    echo "$BW_SESSION" > /tmp/.bw_session
-    chmod 600 /tmp/.bw_session
   fi
+
+  BW_SESSION="$(bw unlock --raw)" || return 1
+  export BW_SESSION
+  (umask 077; echo "$BW_SESSION" > "$_session_file")
 }
 
 _bw_keys_preexec() {
