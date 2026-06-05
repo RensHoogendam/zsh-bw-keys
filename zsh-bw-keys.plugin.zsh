@@ -40,9 +40,12 @@ bw-keys-clear() {
   rm -f "$_BW_KEYS_SESSION_FILE"
   local var_name
   for var_name in ${(k)_BW_KEY_ITEMS}; do
-    [[ -n "${(P)var_name:-}" ]] || continue
-    unset "$var_name"
-    echo -e "\e[1;32m✓ ${var_name} cleared\e[0m" >&2
+    if [[ -n "${(P)var_name:-}" ]]; then
+      unset "$var_name"
+      echo -e "\e[1;32m✓ ${var_name} cleared\e[0m" >&2
+    else
+      echo -e "\e[2m- ${var_name} was not set\e[0m" >&2
+    fi
   done
   echo -e "\e[1;32m✓ Bitwarden session cache cleared\e[0m" >&2
 }
