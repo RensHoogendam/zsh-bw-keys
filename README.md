@@ -45,7 +45,7 @@ The first time one of the trigger commands runs, it unlocks your Bitwarden vault
 bw-keys-clear
 ```
 
-Removes the cached session file and unsets `BW_SESSION`, forcing a fresh unlock on the next trigger. Already-loaded variables stay set in the current shell — open a new shell (or `unset` them) to force a reload.
+Removes the cached session file, unsets `BW_SESSION`, and unsets all registered variables in the current shell — forcing a fresh unlock and reload on the next trigger.
 
 ## Biometric unlock (optional, off by default)
 

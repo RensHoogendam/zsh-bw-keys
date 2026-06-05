@@ -23,10 +23,16 @@ bw-key-register() {
   _BW_KEY_TRIGGERS[$var_name]="${*}"
 }
 
-# Clear the cached session — forces a fresh unlock on the next trigger.
+# Clear the cached session and all loaded keys — forces a fresh unlock and
+# reload on the next trigger.
 bw-keys-clear() {
   unset BW_SESSION
   rm -f "$_BW_KEYS_SESSION_FILE"
+  for var_name in ${(k)_BW_KEY_ITEMS}; do
+    [[ -n "${(P)var_name:-}" ]] || continue
+    unset "$var_name"
+    echo -e "\e[1;32m✓ ${var_name} cleared\e[0m" >&2
+  done
   echo -e "\e[1;32m✓ Bitwarden session cache cleared\e[0m" >&2
 }
 
