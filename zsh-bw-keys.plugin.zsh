@@ -10,6 +10,7 @@
 typeset -gA _BW_KEY_ITEMS    # VAR_NAME -> Bitwarden item name
 typeset -gA _BW_KEY_TRIGGERS # VAR_NAME -> space-separated trigger commands
 typeset -g _BW_KEYS_SESSION_FILE="/tmp/.bw_session"
+typeset -g _BW_KEYS_LAST_LINE=""
 
 bw-key-register() {
   if [[ $# -lt 2 ]]; then
@@ -23,10 +24,9 @@ bw-key-register() {
   _BW_KEY_TRIGGERS[$var_name]="${*}"
 
   # Wrap each trigger command in a function so the key is loaded (prompting
-  # for unlock if needed) right before the command runs — even where preexec
-  # misses it (compound commands like `foo && npm i`) or a previous unlock
-  # was cancelled. If loading fails the command is aborted instead of
-  # crashing on the missing env var.
+  # for unlock if needed) right before the command runs — even in compound
+  # commands like `foo && npm i`. If loading fails the command is aborted
+  # instead of crashing on the missing env var.
   local cmd
   for cmd in "$@"; do
     eval "${cmd}() { _bw_keys_run_trigger ${(q)cmd} \"\$@\" }"
@@ -113,21 +113,54 @@ _bw_keys_run_trigger() {
   for var_name in ${(k)_BW_KEY_ITEMS}; do
     local triggers=(${(z)_BW_KEY_TRIGGERS[$var_name]})
     (( ${triggers[(Ie)$cmd]} )) || continue
-    _bw_keys_load_var "$var_name" || return 1
+    _bw_keys_load_var "$var_name" || {
+      echo -e "\e[1;33m↻ ${var_name} not loaded — aborted '${cmd}'. Run your command again.\e[0m" >&2
+      return 1
+    }
   done
   command "$cmd" "$@"
 }
 
+# Before each command: remember the line (for post-run recovery) and load
+# keys registered without triggers.
 _bw_keys_preexec() {
-  local cmd="${1%% *}"
+  _BW_KEYS_LAST_LINE="$1"
 
   local var_name
   for var_name in ${(k)_BW_KEY_ITEMS}; do
-    local triggers=(${(z)_BW_KEY_TRIGGERS[$var_name]})
-    (( ${#triggers} > 0 )) && (( ! ${triggers[(Ie)$cmd]} )) && continue
+    [[ -n "${_BW_KEY_TRIGGERS[$var_name]}" ]] && continue
     _bw_keys_load_var "$var_name"
   done
 }
 
+# After each command: if a trigger word appeared anywhere in the line but its
+# key is still missing (cancelled unlock, wrapper bypassed, stale session),
+# prompt to unlock now and tell the user to re-run the command.
+_bw_keys_precmd() {
+  local line="$_BW_KEYS_LAST_LINE"
+  _BW_KEYS_LAST_LINE=""
+  [[ -n "$line" ]] || return 0
+
+  local words=(${(z)line})
+  local var_name t missing=()
+  for var_name in ${(k)_BW_KEY_ITEMS}; do
+    [[ -z "${(P)var_name:-}" ]] || continue
+    local triggers=(${(z)_BW_KEY_TRIGGERS[$var_name]})
+    (( ${#triggers} )) || continue
+    for t in $triggers; do
+      (( ${words[(Ie)$t]} )) && { missing+=("$var_name"); break }
+    done
+  done
+  (( ${#missing} )) || return 0
+
+  echo -e "\e[1;33m⚠ Command needed ${(j:, :)missing} but it was not loaded — unlocking now...\e[0m" >&2
+  local ok=1
+  for var_name in $missing; do
+    _bw_keys_load_var "$var_name" || ok=0
+  done
+  (( ok )) && echo -e "\e[1;32m↻ Keys loaded — run your command again.\e[0m" >&2
+}
+
 autoload -Uz add-zsh-hook
 add-zsh-hook preexec _bw_keys_preexec
+add-zsh-hook precmd _bw_keys_precmd

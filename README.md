@@ -41,6 +41,18 @@ The first time one of the trigger commands runs, it unlocks your Bitwarden vault
 
 Trigger commands are wrapped in shell functions, so the key is loaded right before the command actually runs — including in compound commands (`cd x && npm i`). If unlocking fails or is cancelled, the command is aborted with a clear error instead of crashing on the missing variable (e.g. npm's `Failed to replace env in config`).
 
+### Recovery after a failed command
+
+If a command still manages to run without its key (cancelled unlock, wrapper bypassed, stale session), the plugin notices right after it finishes: it prompts you to unlock, loads the missing key, and prints:
+
+```
+⚠ Command needed GITHUB_TOKEN but it was not loaded — unlocking now...
+✓ GITHUB_TOKEN loaded
+↻ Keys loaded — run your command again.
+```
+
+The failed command is not re-run automatically — just run it again.
+
 ### Clearing the session cache
 
 ```zsh
