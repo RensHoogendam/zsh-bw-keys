@@ -2,12 +2,14 @@
 # Usage:
 #   bw-key-register VAR_NAME bw-item-name [trigger-commands...]
 #   Example: bw-key-register GITHUB_TOKEN github-pat npm pnpm bun yarn
+#   bw-keys-clear   # clear the cached session (forces re-unlock)
 #
 # Options (set anywhere in your zshrc, before or after sourcing):
 #   export BW_KEYS_BIOMETRIC=1   # unlock via biometrics (bwbio) — default off
 
 typeset -gA _BW_KEY_ITEMS    # VAR_NAME -> Bitwarden item name
 typeset -gA _BW_KEY_TRIGGERS # VAR_NAME -> space-separated trigger commands
+typeset -g _BW_KEYS_SESSION_FILE="/tmp/.bw_session"
 
 bw-key-register() {
   if [[ $# -lt 2 ]]; then
@@ -21,8 +23,15 @@ bw-key-register() {
   _BW_KEY_TRIGGERS[$var_name]="${*}"
 }
 
+# Clear the cached session — forces a fresh unlock on the next trigger.
+bw-keys-clear() {
+  unset BW_SESSION
+  rm -f "$_BW_KEYS_SESSION_FILE"
+  echo -e "\e[1;32m✓ Bitwarden session cache cleared\e[0m" >&2
+}
+
 _bw_keys_ensure_session() {
-  local _session_file="/tmp/.bw_session"
+  local _session_file="$_BW_KEYS_SESSION_FILE"
 
   command -v bw >/dev/null || {
     echo -e "\e[1;31m✗ Bitwarden CLI not installed (brew install bitwarden-cli)\e[0m" >&2

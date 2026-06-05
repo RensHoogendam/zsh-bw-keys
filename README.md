@@ -39,6 +39,14 @@ bw-key-register SOME_API_KEY my-api-key  # no triggers = loads on any command
 
 The first time one of the trigger commands runs, it unlocks your Bitwarden vault (prompts once), loads the variable, and caches the session for the rest of the session. On reboot the cache clears and it prompts again.
 
+### Clearing the session cache
+
+```zsh
+bw-keys-clear
+```
+
+Removes the cached session file and unsets `BW_SESSION`, forcing a fresh unlock on the next trigger. Already-loaded variables stay set in the current shell — open a new shell (or `unset` them) to force a reload.
+
 ## Biometric unlock (optional, off by default)
 
 Instead of typing your master password, you can unlock with Touch ID / Windows Hello via [bitwarden-cli-bio](https://github.com/jeanregisser/bitwarden-cli-bio) (`bwbio`), which talks to the Bitwarden desktop app:
