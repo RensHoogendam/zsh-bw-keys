@@ -2,6 +2,9 @@
 # Usage:
 #   bw-key-register VAR_NAME bw-item-name [trigger-commands...]
 #   Example: bw-key-register GITHUB_TOKEN github-pat npm pnpm bun yarn
+#
+# Options (set anywhere in your zshrc, before or after sourcing):
+#   export BW_KEYS_BIOMETRIC=1   # unlock via biometrics (bwbio) — default off
 
 typeset -gA _BW_KEY_ITEMS    # VAR_NAME -> Bitwarden item name
 typeset -gA _BW_KEY_TRIGGERS # VAR_NAME -> space-separated trigger commands
@@ -41,7 +44,14 @@ _bw_keys_ensure_session() {
     echo -e "\e[1;33m🔒 Bitwarden vault locked — unlocking...\e[0m" >&2
   fi
 
-  BW_SESSION="$(bw unlock --raw)" || return 1
+  # Opt-in biometric unlock via bwbio (github.com/jeanregisser/bitwarden-cli-bio):
+  # asks the Bitwarden desktop app for Touch ID / Windows Hello and falls back
+  # to a password prompt by itself. Off by default — set BW_KEYS_BIOMETRIC=1.
+  if [[ "${BW_KEYS_BIOMETRIC:-0}" == "1" ]] && command -v bwbio >/dev/null; then
+    BW_SESSION="$(bwbio unlock --raw)" || return 1
+  else
+    BW_SESSION="$(bw unlock --raw)" || return 1
+  fi
   export BW_SESSION
   (umask 077; echo "$BW_SESSION" > "$_session_file")
 }
