@@ -41,6 +41,12 @@ The first time one of the trigger commands runs, it unlocks your Bitwarden vault
 
 Trigger commands are wrapped in shell functions, so the key is loaded right before the command actually runs — including in compound commands (`cd x && npm i`). If unlocking fails or is cancelled, the command is aborted with a clear error instead of crashing on the missing variable (e.g. npm's `Failed to replace env in config`).
 
+### PATH shims — catching `command npm`, scripts, and aliases
+
+Function wrappers are bypassed by `command npm`, by scripts, and by your own helper functions that call `command npm "$@"` internally. For those cases the plugin also generates real executable shims in `~/.cache/zsh-bw-keys/bin` (kept first in `$PATH`). A shim loads the key — prompting for unlock if needed — and then execs the real binary, so *any* invocation of a trigger command gets its key, no matter how it was reached.
+
+After a shim loads a key for a child process, the parent shell picks it up at the next prompt, so subsequent runs skip the Bitwarden round-trip entirely.
+
 ### Recovery after a failed command
 
 If a command still manages to run without its key (cancelled unlock, wrapper bypassed, stale session), the plugin notices right after it finishes: it prompts you to unlock, loads the missing key, and prints:
