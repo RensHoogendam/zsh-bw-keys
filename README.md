@@ -39,6 +39,8 @@ bw-key-register SOME_API_KEY my-api-key  # no triggers = loads on any command
 
 The first time one of the trigger commands runs, it unlocks your Bitwarden vault (prompts once), loads the variable, and caches the session for the rest of the session. On reboot the cache clears and it prompts again.
 
+Trigger commands are wrapped in shell functions, so the key is loaded right before the command actually runs — including in compound commands (`cd x && npm i`). If unlocking fails or is cancelled, the command is aborted with a clear error instead of crashing on the missing variable (e.g. npm's `Failed to replace env in config`).
+
 ### Clearing the session cache
 
 ```zsh

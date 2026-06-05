@@ -2,7 +2,7 @@
 # Usage:
 #   bw-key-register VAR_NAME bw-item-name [trigger-commands...]
 #   Example: bw-key-register GITHUB_TOKEN github-pat npm pnpm bun yarn
-#   bw-keys-clear   # clear the cached session (forces re-unlock)
+#   bw-keys-clear   # clear the cached session + loaded keys (forces re-unlock)
 #
 # Options (set anywhere in your zshrc, before or after sourcing):
 #   export BW_KEYS_BIOMETRIC=1   # unlock via biometrics (bwbio) — default off
@@ -21,6 +21,16 @@ bw-key-register() {
   shift 2
   _BW_KEY_ITEMS[$var_name]="$bw_item"
   _BW_KEY_TRIGGERS[$var_name]="${*}"
+
+  # Wrap each trigger command in a function so the key is loaded (prompting
+  # for unlock if needed) right before the command runs — even where preexec
+  # misses it (compound commands like `foo && npm i`) or a previous unlock
+  # was cancelled. If loading fails the command is aborted instead of
+  # crashing on the missing env var.
+  local cmd
+  for cmd in "$@"; do
+    eval "${cmd}() { _bw_keys_run_trigger ${(q)cmd} \"\$@\" }"
+  done
 }
 
 # Clear the cached session and all loaded keys — forces a fresh unlock and
@@ -28,6 +38,7 @@ bw-key-register() {
 bw-keys-clear() {
   unset BW_SESSION
   rm -f "$_BW_KEYS_SESSION_FILE"
+  local var_name
   for var_name in ${(k)_BW_KEY_ITEMS}; do
     [[ -n "${(P)var_name:-}" ]] || continue
     unset "$var_name"
@@ -71,30 +82,50 @@ _bw_keys_ensure_session() {
   (umask 077; echo "$BW_SESSION" > "$_session_file")
 }
 
+# Load one registered key into its env var (no-op if already set).
+_bw_keys_load_var() {
+  local var_name="$1"
+  [[ -n "${(P)var_name:-}" ]] && return 0
+
+  _bw_keys_ensure_session || return 1
+
+  local val
+  val="$(bw get password "${_BW_KEY_ITEMS[$var_name]}" --session "$BW_SESSION" 2>/dev/null)" || {
+    echo -e "\e[1;31m✗ Failed to load ${var_name} from Bitwarden item '${_BW_KEY_ITEMS[$var_name]}'\e[0m" >&2
+    return 1
+  }
+
+  [[ -z "$val" ]] && {
+    echo -e "\e[1;31m✗ ${var_name}: Bitwarden item '${_BW_KEY_ITEMS[$var_name]}' returned empty\e[0m" >&2
+    return 1
+  }
+
+  export "${var_name}=${val}"
+  echo -e "\e[1;32m✓ ${var_name} loaded\e[0m" >&2
+}
+
+# Wrapper entry point: load every key triggered by this command, then run
+# the real command. Aborts if a key cannot be loaded.
+_bw_keys_run_trigger() {
+  local cmd="$1"
+  shift
+  local var_name
+  for var_name in ${(k)_BW_KEY_ITEMS}; do
+    local triggers=(${(z)_BW_KEY_TRIGGERS[$var_name]})
+    (( ${triggers[(Ie)$cmd]} )) || continue
+    _bw_keys_load_var "$var_name" || return 1
+  done
+  command "$cmd" "$@"
+}
+
 _bw_keys_preexec() {
   local cmd="${1%% *}"
 
+  local var_name
   for var_name in ${(k)_BW_KEY_ITEMS}; do
-    [[ -n "${(P)var_name:-}" ]] && continue
-
     local triggers=(${(z)_BW_KEY_TRIGGERS[$var_name]})
     (( ${#triggers} > 0 )) && (( ! ${triggers[(Ie)$cmd]} )) && continue
-
-    _bw_keys_ensure_session || return 1
-
-    local val
-    val="$(bw get password "${_BW_KEY_ITEMS[$var_name]}" --session "$BW_SESSION" 2>/dev/null)" || {
-      echo -e "\e[1;31m✗ Failed to load ${var_name} from Bitwarden item '${_BW_KEY_ITEMS[$var_name]}'\e[0m" >&2
-      return 1
-    }
-
-    [[ -z "$val" ]] && {
-      echo -e "\e[1;31m✗ ${var_name}: Bitwarden item '${_BW_KEY_ITEMS[$var_name]}' returned empty\e[0m" >&2
-      return 1
-    }
-
-    export "${var_name}=${val}"
-    echo -e "\e[1;32m✓ ${var_name} loaded\e[0m" >&2
+    _bw_keys_load_var "$var_name"
   done
 }
 
