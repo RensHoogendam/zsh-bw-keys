@@ -45,7 +45,7 @@ Trigger commands are wrapped in shell functions, so the key is loaded right befo
 
 Function wrappers are bypassed by `command npm`, by scripts, and by your own helper functions that call `command npm "$@"` internally. For those cases the plugin also generates real executable shims in `~/.cache/zsh-bw-keys/bin` (kept first in `$PATH`). A shim loads the key — prompting for unlock if needed — and then execs the real binary, so *any* invocation of a trigger command gets its key, no matter how it was reached.
 
-After a shim loads a key for a child process, the parent shell picks it up at the next prompt, so subsequent runs skip the Bitwarden round-trip entirely.
+Shims only prompt for unlock when a terminal is attached. In background contexts (editor tasks, CI, cron) a locked vault makes the command fail fast with a clear error instead of hanging on a password read or popping a surprise Touch ID dialog.
 
 ### Recovery after a failed command
 
