@@ -1,0 +1,35 @@
+name: Bump Homebrew formula
+
+# Free CI for the public repo. On every version tag (e.g. v1.2.0) this recomputes
+# the release tarball's sha256 and updates Formula/zsh-bw-keys.rb in the tap repo.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.0)"
+        required: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Skip cleanly until the tap PAT is configured, so the first release tag
+    # doesn't show up as a red failed run.
+    env:
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - name: Bump zsh-bw-keys in RensHoogendam/homebrew-tap
+        if: env.HAS_TAP_TOKEN == 'true'
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: zsh-bw-keys
+          formula-path: Formula/zsh-bw-keys.rb
+          homebrew-tap: RensHoogendam/homebrew-tap
+          tag-name: ${{ github.event.inputs.tag || github.ref_name }}
+          download-url: https://github.com/RensHoogendam/zsh-bw-keys/archive/refs/tags/${{ github.event.inputs.tag || github.ref_name }}.tar.gz
+        env:
+          # Fine-grained PAT scoped to ONLY the homebrew-tap repo (Contents: write).
+          # The built-in GITHUB_TOKEN cannot push to a different repo, hence this.
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

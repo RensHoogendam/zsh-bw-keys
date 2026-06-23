@@ -9,6 +9,14 @@ Lazy Bitwarden secret injection for zsh — automatically loads secrets from you
 
 ## Installation
 
+**Homebrew (recommended on macOS):**
+```zsh
+brew install RensHoogendam/tap/zsh-bw-keys
+# then add to ~/.zshrc:
+echo 'source "$(brew --prefix)/share/zsh-bw-keys/zsh-bw-keys.plugin.zsh"' >> ~/.zshrc
+```
+Brew also pulls in the `bitwarden-cli` dependency for you.
+
 **Manual:**
 ```zsh
 git clone https://github.com/RensHoogendam/zsh-bw-keys ~/.zsh/zsh-bw-keys
@@ -83,7 +91,7 @@ If `BW_KEYS_BIOMETRIC` is unset (or `bwbio` is missing), the plugin uses the reg
 
 ## How it works
 
-- Session is cached in `/tmp/.bw_session` (cleared on reboot, `chmod 600`)
+- Session is cached in per-user, ephemeral storage — `$XDG_RUNTIME_DIR` (Linux) or `$TMPDIR` (macOS `/var/folders`), never world-readable `/tmp`; the file is `chmod 600` and cleared on logout/reboot
 - Cached sessions are validated before use — after `bw lock` or logout the plugin re-prompts instead of failing
 - Already-set variables are never overwritten
 - If no trigger commands are specified, the key loads before any command
