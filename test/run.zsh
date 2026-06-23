@@ -74,6 +74,48 @@ cleared=$(PATH="$mock:$PATH" BW_SESSION=SEED zsh -fc \
    bw-keys-clear >/dev/null 2>&1; print \"[\${SECRET_VAR:-EMPTY}]\"")
 expect "bw-keys-clear unsets loaded vars" "$cleared" "[EMPTY]"
 
+# 8. BW_KEYS_SESSION_TTL window logic: off when unset/0/non-numeric, otherwise
+#    fresh inside the window and expired outside it (or with an unknown stamp).
+ttl=$(zsh -fc "source '$PLUGIN'
+  r=''
+  BW_KEYS_SESSION_TTL=''   _bw_keys_within_ttl \$EPOCHSECONDS            && r+=A
+  BW_KEYS_SESSION_TTL=0    _bw_keys_within_ttl \$EPOCHSECONDS            && r+=B
+  BW_KEYS_SESSION_TTL=abc  _bw_keys_within_ttl \$((EPOCHSECONDS-99999))  && r+=C
+  BW_KEYS_SESSION_TTL=900  _bw_keys_within_ttl \$EPOCHSECONDS            && r+=D
+  BW_KEYS_SESSION_TTL=900  _bw_keys_within_ttl \$((EPOCHSECONDS-10000))  || r+=E
+  BW_KEYS_SESSION_TTL=900  _bw_keys_within_ttl ''                       || r+=F
+  print \$r")
+expect "within_ttl: disabled by default, honors the window when set" "$ttl" "ABCDEF"
+
+# 9. _bw_keys_file_mtime returns a fresh file's mtime as an epoch integer.
+mt=$(zsh -fc "source '$PLUGIN'
+  f=\$(mktemp); _bw_keys_file_mtime \$f
+  [[ \$REPLY == <-> ]] && (( EPOCHSECONDS - REPLY >= 0 && EPOCHSECONDS - REPLY < 5 )) && print ok || print \"bad:\$REPLY\"")
+expect "file_mtime returns the file's epoch mtime" "$mt" "ok"
+
+# 10. A cached session older than the TTL is purged instead of adopted (headless).
+stale=$(PATH="$mock:$PATH" zsh -fc "source '$PLUGIN'
+  _BW_KEYS_SESSION_FILE=\$(mktemp)            # isolate — never touch a real session
+  print SEED > \$_BW_KEYS_SESSION_FILE
+  touch -t 202001010000 \$_BW_KEYS_SESSION_FILE
+  BW_KEYS_SESSION_TTL=1 _bw_keys_ensure_session >/dev/null 2>&1
+  [[ -f \$_BW_KEYS_SESSION_FILE ]] && print PRESENT || print PURGED")
+expect "expired cached session is purged (TTL)" "$stale" "PURGED"
+
+# 11. BW_KEYS_NO_DISK_CACHE ignores a valid on-disk session (memory-only mode).
+nocache=$(PATH="$mock:$PATH" zsh -fc "source '$PLUGIN'
+  _BW_KEYS_SESSION_FILE=\$(mktemp); print SEED > \$_BW_KEYS_SESSION_FILE
+  BW_KEYS_NO_DISK_CACHE=1 _bw_keys_ensure_session >/dev/null 2>&1
+  print \"[\${BW_SESSION:-EMPTY}]\"")
+expect "NO_DISK_CACHE ignores the on-disk session" "$nocache" "[EMPTY]"
+
+# 12. By default a valid on-disk session IS adopted (proves the flag is the gate).
+adopt=$(PATH="$mock:$PATH" zsh -fc "source '$PLUGIN'
+  _BW_KEYS_SESSION_FILE=\$(mktemp); print SEED > \$_BW_KEYS_SESSION_FILE
+  _bw_keys_ensure_session >/dev/null 2>&1
+  print \"[\${BW_SESSION:-EMPTY}]\"")
+expect "adopts a valid on-disk session by default" "$adopt" "[SEED]"
+
 print ""
 print "Result: $PASS passed, $FAIL failed"
 (( FAIL == 0 ))

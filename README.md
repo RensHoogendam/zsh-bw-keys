@@ -89,12 +89,29 @@ export BW_KEYS_BIOMETRIC=1
 
 If `BW_KEYS_BIOMETRIC` is unset (or `bwbio` is missing), the plugin uses the regular `bw unlock` password prompt. When biometrics fail or are unavailable, `bwbio` itself falls back to a password prompt.
 
+## Session security (optional)
+
+By default an unlock is cached in per-user, ephemeral storage (`0600`, see [How it works](#how-it-works)) and stays valid until you `bw lock`, log out, or reboot. Two env vars let you tighten that — set either in `~/.zshrc`:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `BW_KEYS_SESSION_TTL` | `0` (no expiry) | Seconds an unlock stays valid. Once it lapses, the next trigger re-authenticates. Bounds the window in which a leaked session is usable, and adds the idle-lock the `bw` CLI itself lacks. |
+| `BW_KEYS_NO_DISK_CACHE` | unset | When `1`, the session is never written to disk — it lives only in the current shell. Maximum isolation, but every new terminal re-unlocks (no cross-terminal sharing). |
+
+```zsh
+export BW_KEYS_SESSION_TTL=900    # re-auth 15 min after each unlock
+export BW_KEYS_NO_DISK_CACHE=1    # optional: memory-only, no shared session file
+```
+
+A `BW_SESSION` unlocks your **entire** vault, so the cached key is high-value. The TTL pairs naturally with [biometric unlock](#biometric-unlock-optional-off-by-default): with Touch ID the re-auth is a ~1s tap, so a short TTL costs almost nothing. For more isolation, point the plugin's items at a dedicated dev vault so a leaked session can't reach personal logins.
+
 ## How it works
 
 - Session is cached in per-user, ephemeral storage — `$XDG_RUNTIME_DIR` (Linux) or `$TMPDIR` (macOS `/var/folders`), never world-readable `/tmp`; the file is `chmod 600` and cleared on logout/reboot
 - Cached sessions are validated before use — after `bw lock` or logout the plugin re-prompts instead of failing
 - Already-set variables are never overwritten
 - If no trigger commands are specified, the key loads before any command
+- Optionally time-bounded (`BW_KEYS_SESSION_TTL`) or kept memory-only (`BW_KEYS_NO_DISK_CACHE`) — see [Session security](#session-security-optional)
 
 ### Flow
 
