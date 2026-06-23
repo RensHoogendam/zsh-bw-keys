@@ -1,0 +1,27 @@
+name: CI
+
+# Fast feedback on every push to main and every PR: parse-lint the plugin with
+# `zsh -n` (shellcheck doesn't properly support zsh) and run the test suite on
+# both Linux and macOS. No secrets, no deploy.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-test:
+    name: lint + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install zsh (Linux only — macOS ships it)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Lint (zsh -n)
+        run: zsh -n zsh-bw-keys.plugin.zsh
+      - name: Test
+        run: zsh test/run.zsh
