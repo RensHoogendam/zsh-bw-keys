@@ -1,13 +1,14 @@
-name: Bump Homebrew formula
+name: Release
 
-# Free CI auto-bump. On every vX.Y.Z tag (or a manual dispatch from the Actions
-# tab), recompute the release tarball's sha256 and update the formula in the tap
-# repo. First-party only: no third-party action ever sees the token.
+# Multi-step deploy: lint + test must pass before the Homebrew formula is bumped.
+# On every vX.Y.Z tag (or a manual dispatch), the `test` job parse-lints and runs
+# the suite; only if it's green does `bump` recompute the release tarball's sha256
+# and update the formula in the tap repo. First-party only — no third-party action
+# ever sees the token.
 #
 # Needs ONE secret — HOMEBREW_TAP_TOKEN — a fine-grained PAT scoped to ONLY
-# RensHoogendam/homebrew-tap with Contents: write. The built-in GITHUB_TOKEN
-# can't push to another repo, hence this. Without the secret the job skips
-# cleanly (no red X).
+# RensHoogendam/homebrew-tap with Contents: write. The built-in GITHUB_TOKEN can't
+# push to another repo, hence this. Without the secret the bump job skips cleanly.
 on:
   push:
     tags: ['v*']
@@ -18,7 +19,21 @@ on:
         required: true
 
 jobs:
+  test:
+    name: lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Lint (zsh -n)
+        run: zsh -n zsh-bw-keys.plugin.zsh
+      - name: Test
+        run: zsh test/run.zsh
+
   bump:
+    name: bump homebrew formula
+    needs: test
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
