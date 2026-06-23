@@ -10,7 +10,12 @@
 typeset -gA _BW_KEY_ITEMS    # VAR_NAME -> Bitwarden item name
 typeset -gA _BW_KEY_TRIGGERS # VAR_NAME -> space-separated trigger commands
 typeset -gA _BW_KEYS_ATTEMPTED # VAR_NAME -> 1 once a load was attempted (no retry storms)
-typeset -g _BW_KEYS_SESSION_FILE="/tmp/.bw_session"
+# Cache the unlocked session in per-user, ephemeral storage — never the shared,
+# world-traversable /tmp (symlink-race + snoop risk). Prefer $XDG_RUNTIME_DIR
+# (Linux, 0700, cleared on logout), then $TMPDIR (macOS per-user /var/folders,
+# 0700), falling back to /tmp only as a last resort. The file itself is written
+# 0600 via umask 077 below.
+typeset -g _BW_KEYS_SESSION_FILE="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/.bw_session"
 typeset -g _BW_KEYS_SESSION_OK="" # set once the cached session validated in this shell
 typeset -g _BW_KEYS_LAST_LINE=""
 typeset -g _BW_KEYS_PLUGIN_FILE="${${(%):-%N}:A}"
@@ -22,6 +27,14 @@ _bw_keys_msg() {
   local color="$1"
   shift
   echo -e "\e[${_BW_KEYS_COLORS[$color]}m$*\e[0m" >&2
+}
+
+# True only when there is a terminal to prompt on. Everything else — editor
+# tasks, background jobs, CI, and non-interactive snapshot shells (e.g. the one
+# Claude Code replays) — must never prompt or spam; callers run the real
+# command best-effort instead. (Negation of the old `! -t 0 && ! -t 1 && ! -t 2`.)
+_bw_keys_can_prompt() {
+  [[ -t 0 || -t 1 || -t 2 ]]
 }
 
 # Pure lookup: set $reply to the var names whose trigger list contains any
@@ -60,7 +73,17 @@ bw-key-register() {
   # instead of crashing on the missing env var.
   local cmd
   for cmd in "$@"; do
-    eval "${cmd}() { _bw_keys_run_trigger ${(q)cmd} \"\$@\" }"
+    # Fall back to the real command when the plugin's helper isn't loaded in
+    # this shell — a captured snapshot (Claude Code, etc.) keeps the wrapper
+    # but drops the underscore-prefixed helpers, which otherwise crashes the
+    # wrapper with "command not found: _bw_keys_run_trigger".
+    eval "${cmd}() {
+      if (( \$+functions[_bw_keys_run_trigger] )); then
+        _bw_keys_run_trigger ${(q)cmd} \"\$@\"
+      else
+        command ${(q)cmd} \"\$@\"
+      fi
+    }"
     _bw_keys_write_shim "$cmd"
   done
   if (( $# )); then
@@ -106,7 +129,10 @@ _bw_keys_shim_main() {
   local var_name
   for var_name in ${(k)_BW_KEY_ITEMS}; do
     [[ -n "${(P)var_name:-}" ]] && continue
-    _bw_keys_load_var "$var_name" || {
+    _bw_keys_load_var "$var_name"
+    local rc=$?
+    (( rc == 2 )) && continue   # no terminal to unlock on — run the command anyway
+    (( rc != 0 )) && {
       _bw_keys_msg yellow "↻ ${var_name} not loaded — aborted '${cmd}'."
       exit 1
     }
@@ -138,6 +164,8 @@ _bw_keys_ensure_session() {
   [[ -n "$_BW_KEYS_SESSION_OK" && -n "${BW_SESSION:-}" ]] && return 0
 
   command -v bw >/dev/null || {
+    # No terminal to prompt on → skip silently and let the command run anyway.
+    _bw_keys_can_prompt || return 2
     _bw_keys_msg red "✗ Bitwarden CLI not installed (brew install bitwarden-cli)"
     return 1
   }
@@ -156,15 +184,14 @@ _bw_keys_ensure_session() {
     fi
     was_stale=1
     unset BW_SESSION
-    rm -f "$_BW_KEYS_SESSION_FILE"
+    rm -f "$_BW_KEYS_SESSION_FILE" 2>/dev/null   # best-effort; stay quiet if the fs blocks it
   fi
 
-  # No terminal attached (editor task, background job, CI): never prompt —
-  # a surprise Touch ID popup or a hung password read is worse than failing.
-  if [[ ! -t 0 && ! -t 1 && ! -t 2 ]]; then
-    _bw_keys_msg red "✗ Bitwarden vault locked and no terminal to prompt on"
-    return 1
-  fi
+  # No terminal attached (editor task, background job, CI, snapshot shell):
+  # never prompt — a surprise Touch ID popup or a hung password read is worse
+  # than failing. Signal "skipped, can't prompt" (2) so callers run the real
+  # command best-effort and stay silent, instead of aborting with noise.
+  _bw_keys_can_prompt || return 2
 
   if (( was_stale )); then
     _bw_keys_msg yellow "⚠ Cached Bitwarden session is stale — re-unlocking..."
@@ -190,7 +217,10 @@ _bw_keys_load_var() {
   local var_name="$1"
   [[ -n "${(P)var_name:-}" ]] && return 0
 
-  _bw_keys_ensure_session || return 1
+  _bw_keys_ensure_session
+  local sess_rc=$?
+  (( sess_rc == 2 )) && return 2   # no terminal to unlock on — propagate silently
+  (( sess_rc != 0 )) && return 1
 
   local val
   val="$(bw get password "${_BW_KEY_ITEMS[$var_name]}" --session "$BW_SESSION" 2>/dev/null)" || {
@@ -227,7 +257,10 @@ _bw_keys_run_trigger() {
   _bw_keys_vars_for_cmds "$cmd"
   local var_name vars=($reply)
   for var_name in $vars; do
-    _bw_keys_load_var "$var_name" || {
+    _bw_keys_load_var "$var_name"
+    local rc=$?
+    (( rc == 2 )) && continue   # no terminal to unlock on — run the command anyway
+    (( rc != 0 )) && {
       _bw_keys_msg yellow "↻ ${var_name} not loaded — aborted '${cmd}'. Run your command again."
       return 1
     }
