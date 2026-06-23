@@ -116,6 +116,43 @@ adopt=$(PATH="$mock:$PATH" zsh -fc "source '$PLUGIN'
   print \"[\${BW_SESSION:-EMPTY}]\"")
 expect "adopts a valid on-disk session by default" "$adopt" "[SEED]"
 
+# 13. A cache file with loose perms (not 0600) is NOT adopted — it's purged and
+#     we fall through to re-auth instead of trusting an untrusted file.
+loose=$(PATH="$mock:$PATH" zsh -fc "source '$PLUGIN'
+  _BW_KEYS_SESSION_FILE=\$(mktemp); print SEED > \$_BW_KEYS_SESSION_FILE
+  chmod 0644 \$_BW_KEYS_SESSION_FILE
+  _bw_keys_ensure_session >/dev/null 2>&1
+  print \"[\${BW_SESSION:-EMPTY}]\"" </dev/null 2>/dev/null)
+expect "a cache file with loose perms is not adopted" "$loose" "[EMPTY]"
+
+# 14. No terminal to prompt on → _bw_keys_load_var returns 2 (the "run the
+#     command anyway, don't abort" contract the wrapper + shim rely on).
+#     $(...) gives a pipe on fd1, /dev/null on fd0/fd2 → no tty anywhere.
+ttyrc=$(PATH="$mock:$PATH" zsh -fc "source '$PLUGIN'
+  _BW_KEYS_SESSION_FILE=\$(mktemp); rm -f \$_BW_KEYS_SESSION_FILE
+  unset BW_SESSION
+  bw-key-register NO_TTY_VAR item-secret
+  _bw_keys_load_var NO_TTY_VAR >/dev/null 2>&1
+  print \$?" </dev/null 2>/dev/null)
+expect "no-TTY load returns 2 (run the command anyway)" "$ttyrc" "2"
+
+# 15. _bw_keys_write_shim generates a real, executable shim with a zsh shebang —
+#     the only path that catches \`command npm\`, scripts, and non-zsh callers.
+shim=$(zsh -fc "source '$PLUGIN'
+  _BW_KEYS_SHIM_DIR=\$(mktemp -d)
+  bw-key-register SHIM_VAR item-x deploycmd
+  s=\$_BW_KEYS_SHIM_DIR/deploycmd
+  [[ -x \$s ]] && head -1 \$s")
+expect "write_shim creates an executable shim with a zsh shebang" "$shim" "#!/usr/bin/env zsh"
+
+# 16. precmd recovery: a trigger word ran without its key → precmd loads it.
+recovered=$(PATH="$mock:$PATH" BW_SESSION=SEED zsh -fc "source '$PLUGIN'
+  bw-key-register SECRET_VAR item-secret npm
+  _BW_KEYS_LAST_LINE='npm i'
+  _bw_keys_precmd >/dev/null 2>&1
+  print \$SECRET_VAR")
+expect "precmd recovery loads a missing triggered var" "$recovered" "s3cr3t"
+
 print ""
 print "Result: $PASS passed, $FAIL failed"
 (( FAIL == 0 ))

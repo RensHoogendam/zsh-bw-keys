@@ -58,6 +58,17 @@ _bw_keys_file_mtime() {
   zstat -A st +mtime "$1" 2>/dev/null && REPLY="${st[1]}"
 }
 
+# True only when the cache file is one we actually own and is still 0600. A
+# wrong owner or loosened perms — e.g. a misconfigured $XDG_RUNTIME_DIR that
+# resolves to a shared path — means the session can't be trusted, so callers
+# purge it and re-authenticate. (`8#NNN` is zsh's octal literal; a bare 0600
+# is read as decimal here.)
+_bw_keys_session_file_safe() {
+  local -A st
+  zstat -H st "$1" 2>/dev/null || return 1
+  (( st[uid] == UID )) && (( (st[mode] & 8#777) == 8#600 ))
+}
+
 # True when an unlock stamped at epoch $1 is still within BW_KEYS_SESSION_TTL.
 # TTL of 0/unset (or non-numeric) means "no expiry" — always fresh, and the
 # common default path never touches $EPOCHSECONDS. An unknown/blank stamp with
@@ -149,7 +160,7 @@ _bw_keys_shim_main ${(qq)cmd} \"\$@\""
   # they cost) when the shim already has the right content.
   [[ -x "$shim" && "$(<$shim)" == "$content" ]] && return 0
 
-  [[ -d "$_BW_KEYS_SHIM_DIR" ]] || mkdir -p "$_BW_KEYS_SHIM_DIR"
+  [[ -d "$_BW_KEYS_SHIM_DIR" ]] || mkdir -p -m 700 "$_BW_KEYS_SHIM_DIR"
   print -r -- "$content" > "$shim"
   chmod +x "$shim"
 }
@@ -213,12 +224,13 @@ _bw_keys_ensure_session() {
   }
 
   # Adopt a session cached by another shell — unless the disk cache is disabled,
-  # or the cached unlock has already aged past the TTL (then purge and re-auth).
+  # the file isn't one we safely own, or the cached unlock has aged past the TTL
+  # (any of those → purge and re-auth).
   if [[ -z "${BW_SESSION:-}" && "${BW_KEYS_NO_DISK_CACHE:-0}" != "1" && -f "$_BW_KEYS_SESSION_FILE" ]]; then
     _bw_keys_file_mtime "$_BW_KEYS_SESSION_FILE"
     local cached_ts="$REPLY"
-    if _bw_keys_within_ttl "$cached_ts"; then
-      BW_SESSION="$(cat "$_BW_KEYS_SESSION_FILE")"
+    if _bw_keys_session_file_safe "$_BW_KEYS_SESSION_FILE" && _bw_keys_within_ttl "$cached_ts"; then
+      BW_SESSION="$(<"$_BW_KEYS_SESSION_FILE")"
       export BW_SESSION
       _BW_KEYS_SESSION_TS="$cached_ts"
     else
@@ -226,10 +238,13 @@ _bw_keys_ensure_session() {
     fi
   fi
 
-  # Validate the session — it goes stale after `bw lock`, logout, etc.
+  # Validate the session — it goes stale after `bw lock`, logout, etc. The
+  # session is passed via the exported BW_SESSION env var (which bw reads
+  # natively), not `--session "$BW_SESSION"`, so the secret never lands in this
+  # process's argv where any same-UID process could read it (`ps` / `/proc`).
   local was_stale=0
   if [[ -n "${BW_SESSION:-}" ]]; then
-    if bw unlock --check --session "$BW_SESSION" >/dev/null 2>&1; then
+    if bw unlock --check >/dev/null 2>&1; then
       _BW_KEYS_SESSION_OK=1
       # An inherited session (set in the env, not by us) has no known age —
       # stamp it now so the TTL clock starts from when this shell first saw it.
@@ -261,13 +276,19 @@ _bw_keys_ensure_session() {
   else
     BW_SESSION="$(bw unlock --raw)" || return 1
   fi
+  # A cancelled or no-op unlock can exit 0 with empty output — don't cache that.
+  if [[ -z "$BW_SESSION" ]]; then
+    _bw_keys_msg red "✗ Unlock returned an empty session"
+    return 1
+  fi
   export BW_SESSION
   _BW_KEYS_SESSION_OK=1
   _BW_KEYS_SESSION_TS="${EPOCHSECONDS:-}"
   # Persist for other shells unless the user opted out of the on-disk cache.
-  # umask 077 → the file is created 0600 (owner-only) in per-user storage.
+  # umask 077 → the file is created 0600 (owner-only) in per-user storage;
+  # print -r -- is byte-safe for the token (echo would mangle a leading '-' etc).
   if [[ "${BW_KEYS_NO_DISK_CACHE:-0}" != "1" ]]; then
-    (umask 077; echo "$BW_SESSION" > "$_BW_KEYS_SESSION_FILE")
+    (umask 077; print -r -- "$BW_SESSION" > "$_BW_KEYS_SESSION_FILE")
   fi
 }
 
@@ -282,7 +303,7 @@ _bw_keys_load_var() {
   (( sess_rc != 0 )) && return 1
 
   local val
-  val="$(bw get password "${_BW_KEY_ITEMS[$var_name]}" --session "$BW_SESSION" 2>/dev/null)" || {
+  val="$(bw get password "${_BW_KEY_ITEMS[$var_name]}" 2>/dev/null)" || {
     _bw_keys_msg red "✗ Failed to load ${var_name} from Bitwarden item '${_BW_KEY_ITEMS[$var_name]}'"
     return 1
   }

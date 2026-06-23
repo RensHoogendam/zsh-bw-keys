@@ -20,11 +20,18 @@ on:
 
 jobs:
   test:
-    name: lint + test
-    runs-on: ubuntu-latest
+    name: lint + test (${{ matrix.os }})
+    # Gate the release on the SAME matrix as CI — a macOS-only regression
+    # (e.g. the zstat / zmodload TTL path) must fail here before any bump.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install zsh
+      - name: Install zsh (Linux only — macOS ships it)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Lint (zsh -n)
         run: zsh -n zsh-bw-keys.plugin.zsh

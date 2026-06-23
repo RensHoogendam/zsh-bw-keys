@@ -105,6 +105,8 @@ export BW_KEYS_NO_DISK_CACHE=1    # optional: memory-only, no shared session fil
 
 A `BW_SESSION` unlocks your **entire** vault, so the cached key is high-value. The TTL pairs naturally with [biometric unlock](#biometric-unlock-optional-off-by-default): with Touch ID the re-auth is a ~1s tap, so a short TTL costs almost nothing. For more isolation, point the plugin's items at a dedicated dev vault so a leaked session can't reach personal logins.
 
+> **Scope of TTL expiry:** the TTL revokes the session in the current shell and removes the shared cache file. It cannot reach back into child processes (subshells, backgrounded jobs) that already inherited `BW_SESSION` in their environment at unlock time — those keep their copy for their own lifetime. This is inherent to how Unix exports environment variables, not specific to this plugin. Likewise, secrets are passed to `bw` via the exported `BW_SESSION` env var rather than a `--session` argument, so they don't show up in `ps`/`/proc/<pid>/cmdline`.
+
 ## How it works
 
 - Session is cached in per-user, ephemeral storage — `$XDG_RUNTIME_DIR` (Linux) or `$TMPDIR` (macOS `/var/folders`), never world-readable `/tmp`; the file is `chmod 600` and cleared on logout/reboot
