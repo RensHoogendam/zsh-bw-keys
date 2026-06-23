@@ -96,6 +96,34 @@ If `BW_KEYS_BIOMETRIC` is unset (or `bwbio` is missing), the plugin uses the reg
 - Already-set variables are never overwritten
 - If no trigger commands are specified, the key loads before any command
 
+### Flow
+
+```mermaid
+flowchart TD
+  A["Run a trigger command<br/>npm / pnpm / git ..."] --> B["Wrapper / PATH shim<br/>intercepts before exec"]
+  B --> C{"VAR already set<br/>in environment?"}
+  C -->|"Yes"| RUN["Run the real command"]
+  C -->|"No"| D{"Cached BW_SESSION<br/>still valid?<br/>bw unlock --check"}
+  D -->|"Yes"| LOAD["bw get password ITEM<br/>export VAR<br/>never overwrite existing"]
+  D -->|"No"| E{"TTY attached?"}
+  E -->|"No: headless / CI / editor"| FAIL["Abort, fail fast<br/>clear error, never hang"]
+  E -->|"Yes"| F{"BW_KEYS_BIOMETRIC=1<br/>and bwbio present?"}
+  F -->|"Yes"| BIO["Unlock via Touch ID<br/>bwbio"]
+  F -->|"No"| PW["bw unlock<br/>password prompt"]
+  BIO --> G{"Unlock<br/>succeeded?"}
+  PW --> G
+  G -->|"No / cancelled"| FAIL2["Abort command<br/>clear error"]
+  G -->|"Yes"| CACHE["Cache session to per-user file<br/>XDG_RUNTIME_DIR / TMPDIR<br/>umask 077, chmod 600"]
+  CACHE --> LOAD
+  LOAD --> RUN
+  RUN --> H{"Ran without its key?<br/>precmd recovery check"}
+  H -->|"No"| DONE["Done"]
+  H -->|"Yes"| REC["Prompt unlock, load missing VAR<br/>print: run your command again"]
+  REC -.->|"you re-run"| A
+```
+
+Editable source: [`docs/secret-flow.drawio`](docs/secret-flow.drawio) — open in [draw.io](https://app.diagrams.net).
+
 ## Development
 
 ```zsh
