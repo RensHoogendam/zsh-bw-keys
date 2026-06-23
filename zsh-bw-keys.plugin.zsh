@@ -17,10 +17,23 @@ typeset -gA _BW_KEYS_ATTEMPTED # VAR_NAME -> 1 once a load was attempted (no ret
 # 0600 via umask 077 below.
 typeset -g _BW_KEYS_SESSION_FILE="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/.bw_session"
 typeset -g _BW_KEYS_SESSION_OK="" # set once the cached session validated in this shell
+typeset -g _BW_KEYS_SESSION_TS="" # epoch seconds of the unlock backing this session (for TTL)
 typeset -g _BW_KEYS_LAST_LINE=""
 typeset -g _BW_KEYS_PLUGIN_FILE="${${(%):-%N}:A}"
 typeset -g _BW_KEYS_SHIM_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zsh-bw-keys/bin"
 typeset -gA _BW_KEYS_COLORS=(green '1;32' red '1;31' yellow '1;33' dim '2')
+
+# Optional knobs (set in your zshrc):
+#   BW_KEYS_SESSION_TTL=900   # seconds an unlock stays valid before re-auth
+#                             # (0/unset = until `bw lock`/reboot, the default)
+#   BW_KEYS_NO_DISK_CACHE=1   # keep the session in this shell only, never on disk
+#                             # (no cross-terminal sharing)
+#   BW_KEYS_BIOMETRIC=1       # unlock via Touch ID (bwbio) — pairs well with a short TTL
+#
+# Core zsh modules backing the TTL: $EPOCHSECONDS and zstat (cached file's mtime).
+# Loading is a no-op when BW_KEYS_SESSION_TTL is unset.
+zmodload zsh/datetime 2>/dev/null
+zmodload -F zsh/stat b:zstat 2>/dev/null
 
 # Print a status line to stderr in the given color (green|red|yellow|dim).
 _bw_keys_msg() {
@@ -35,6 +48,27 @@ _bw_keys_msg() {
 # command best-effort instead. (Negation of the old `! -t 0 && ! -t 1 && ! -t 2`.)
 _bw_keys_can_prompt() {
   [[ -t 0 || -t 1 || -t 2 ]]
+}
+
+# Set $REPLY to a file's mtime in epoch seconds (empty if it can't be stat'd).
+# Uses the zstat builtin — no fork, no GNU/BSD `stat` flag differences.
+_bw_keys_file_mtime() {
+  local -a st
+  REPLY=""
+  zstat -A st +mtime "$1" 2>/dev/null && REPLY="${st[1]}"
+}
+
+# True when an unlock stamped at epoch $1 is still within BW_KEYS_SESSION_TTL.
+# TTL of 0/unset (or non-numeric) means "no expiry" — always fresh, and the
+# common default path never touches $EPOCHSECONDS. An unknown/blank stamp with
+# a TTL set is treated as expired so we re-auth rather than trust an opaque age.
+_bw_keys_within_ttl() {
+  local ttl="${BW_KEYS_SESSION_TTL:-0}"
+  [[ "$ttl" == <-> ]] || return 0
+  (( ttl <= 0 )) && return 0
+  local ts="$1"
+  [[ "$ts" == <-> ]] || return 1
+  (( ${EPOCHSECONDS:-0} - ts < ttl ))
 }
 
 # Pure lookup: set $reply to the var names whose trigger list contains any
@@ -145,6 +179,7 @@ _bw_keys_shim_main() {
 bw-keys-clear() {
   unset BW_SESSION
   _BW_KEYS_SESSION_OK=""
+  _BW_KEYS_SESSION_TS=""
   _BW_KEYS_ATTEMPTED=()
   rm -f "$_BW_KEYS_SESSION_FILE"
   local var_name
@@ -160,8 +195,15 @@ bw-keys-clear() {
 }
 
 _bw_keys_ensure_session() {
-  # Already validated in this shell — skip the bw round-trip (~1s each).
-  [[ -n "$_BW_KEYS_SESSION_OK" && -n "${BW_SESSION:-}" ]] && return 0
+  # Already validated in this shell — skip the bw round-trip (~1s each), unless
+  # the unlock has aged past BW_KEYS_SESSION_TTL, in which case drop it and
+  # re-unlock below.
+  if [[ -n "$_BW_KEYS_SESSION_OK" && -n "${BW_SESSION:-}" ]]; then
+    _bw_keys_within_ttl "$_BW_KEYS_SESSION_TS" && return 0
+    _BW_KEYS_SESSION_OK=""
+    _BW_KEYS_SESSION_TS=""
+    unset BW_SESSION
+  fi
 
   command -v bw >/dev/null || {
     # No terminal to prompt on → skip silently and let the command run anyway.
@@ -170,9 +212,18 @@ _bw_keys_ensure_session() {
     return 1
   }
 
-  if [[ -z "${BW_SESSION:-}" && -f "$_BW_KEYS_SESSION_FILE" ]]; then
-    BW_SESSION="$(cat "$_BW_KEYS_SESSION_FILE")"
-    export BW_SESSION
+  # Adopt a session cached by another shell — unless the disk cache is disabled,
+  # or the cached unlock has already aged past the TTL (then purge and re-auth).
+  if [[ -z "${BW_SESSION:-}" && "${BW_KEYS_NO_DISK_CACHE:-0}" != "1" && -f "$_BW_KEYS_SESSION_FILE" ]]; then
+    _bw_keys_file_mtime "$_BW_KEYS_SESSION_FILE"
+    local cached_ts="$REPLY"
+    if _bw_keys_within_ttl "$cached_ts"; then
+      BW_SESSION="$(cat "$_BW_KEYS_SESSION_FILE")"
+      export BW_SESSION
+      _BW_KEYS_SESSION_TS="$cached_ts"
+    else
+      rm -f "$_BW_KEYS_SESSION_FILE" 2>/dev/null
+    fi
   fi
 
   # Validate the session — it goes stale after `bw lock`, logout, etc.
@@ -180,6 +231,9 @@ _bw_keys_ensure_session() {
   if [[ -n "${BW_SESSION:-}" ]]; then
     if bw unlock --check --session "$BW_SESSION" >/dev/null 2>&1; then
       _BW_KEYS_SESSION_OK=1
+      # An inherited session (set in the env, not by us) has no known age —
+      # stamp it now so the TTL clock starts from when this shell first saw it.
+      [[ -n "$_BW_KEYS_SESSION_TS" ]] || _BW_KEYS_SESSION_TS="${EPOCHSECONDS:-}"
       return 0
     fi
     was_stale=1
@@ -209,7 +263,12 @@ _bw_keys_ensure_session() {
   fi
   export BW_SESSION
   _BW_KEYS_SESSION_OK=1
-  (umask 077; echo "$BW_SESSION" > "$_BW_KEYS_SESSION_FILE")
+  _BW_KEYS_SESSION_TS="${EPOCHSECONDS:-}"
+  # Persist for other shells unless the user opted out of the on-disk cache.
+  # umask 077 → the file is created 0600 (owner-only) in per-user storage.
+  if [[ "${BW_KEYS_NO_DISK_CACHE:-0}" != "1" ]]; then
+    (umask 077; echo "$BW_SESSION" > "$_BW_KEYS_SESSION_FILE")
+  fi
 }
 
 # Load one registered key into its env var (no-op if already set).
