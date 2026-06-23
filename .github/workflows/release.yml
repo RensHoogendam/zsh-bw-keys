@@ -1,35 +1,77 @@
 name: Bump Homebrew formula
 
-# Free CI for the public repo. On every version tag (e.g. v1.2.0) this recomputes
-# the release tarball's sha256 and updates Formula/zsh-bw-keys.rb in the tap repo.
+# Free CI auto-bump. On every vX.Y.Z tag (or a manual dispatch from the Actions
+# tab), recompute the release tarball's sha256 and update the formula in the tap
+# repo. First-party only: no third-party action ever sees the token.
+#
+# Needs ONE secret — HOMEBREW_TAP_TOKEN — a fine-grained PAT scoped to ONLY
+# RensHoogendam/homebrew-tap with Contents: write. The built-in GITHUB_TOKEN
+# can't push to another repo, hence this. Without the secret the job skips
+# cleanly (no red X).
 on:
   push:
-    tags:
-      - "v*"
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v1.0.0)"
+        description: 'Tag to bump (e.g. v1.1.0)'
         required: true
 
 jobs:
   bump:
     runs-on: ubuntu-latest
-    # Skip cleanly until the tap PAT is configured, so the first release tag
-    # doesn't show up as a red failed run.
     env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
       HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     steps:
-      - name: Bump zsh-bw-keys in RensHoogendam/homebrew-tap
+      - name: Skip if no tap token configured
+        if: env.HAS_TAP_TOKEN != 'true'
+        run: |
+          echo "::notice::HOMEBREW_TAP_TOKEN is not set — skipping formula bump."
+          echo "Add a fine-grained PAT (homebrew-tap, Contents: write) as the"
+          echo "HOMEBREW_TAP_TOKEN repo secret to enable auto-bump."
+
+      - name: Check out the tap
         if: env.HAS_TAP_TOKEN == 'true'
-        uses: mislav/bump-homebrew-formula-action@v3
+        uses: actions/checkout@v4
         with:
-          formula-name: zsh-bw-keys
-          formula-path: Formula/zsh-bw-keys.rb
-          homebrew-tap: RensHoogendam/homebrew-tap
-          tag-name: ${{ github.event.inputs.tag || github.ref_name }}
-          download-url: https://github.com/RensHoogendam/zsh-bw-keys/archive/refs/tags/${{ github.event.inputs.tag || github.ref_name }}.tar.gz
-        env:
-          # Fine-grained PAT scoped to ONLY the homebrew-tap repo (Contents: write).
-          # The built-in GITHUB_TOKEN cannot push to a different repo, hence this.
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: RensHoogendam/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Bump formula to ${{ env.TAG }}
+        if: env.HAS_TAP_TOKEN == 'true'
+        run: |
+          set -euo pipefail
+          SRC=RensHoogendam/zsh-bw-keys
+          tarball="https://github.com/$SRC/archive/refs/tags/$TAG.tar.gz"
+
+          # GitHub generates the archive on first request — retry a few times.
+          tmp=$(mktemp)
+          for i in 1 2 3 4 5 6; do
+            if curl -fsSL "$tarball" -o "$tmp" && [ -s "$tmp" ]; then break; fi
+            echo "waiting for tarball… ($i)"; sleep 3
+          done
+          [ -s "$tmp" ] || { echo "::error::could not download $tarball"; exit 1; }
+          sha=$(sha256sum "$tmp" | cut -d' ' -f1)
+          echo "sha256=$sha"
+
+          cd tap
+          f=Formula/zsh-bw-keys.rb
+          out=$(mktemp)
+          sed -E \
+            -e "s|archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz|archive/refs/tags/$TAG.tar.gz|" \
+            -e "s|sha256 \"[a-f0-9]{64}\"|sha256 \"$sha\"|" \
+            "$f" > "$out" && mv "$out" "$f"
+          grep -q "tags/$TAG.tar.gz" "$f" || { echo "::error::formula url not updated"; exit 1; }
+          grep -q "sha256 \"$sha\"" "$f"   || { echo "::error::formula sha not updated"; exit 1; }
+
+          if git diff --quiet; then
+            echo "::notice::formula already at $TAG — nothing to do."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "zsh-bw-keys ${TAG#v}"
+          git push
+          echo "::notice::bumped tap formula to $TAG"

@@ -95,3 +95,16 @@ If `BW_KEYS_BIOMETRIC` is unset (or `bwbio` is missing), the plugin uses the reg
 - Cached sessions are validated before use — after `bw lock` or logout the plugin re-prompts instead of failing
 - Already-set variables are never overwritten
 - If no trigger commands are specified, the key loads before any command
+
+## Releasing (maintainers)
+
+Cutting a release is just a tag — CI does the rest:
+
+```zsh
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+The [`Bump Homebrew formula`](.github/workflows/release.yml) workflow then recomputes the release tarball's `sha256` and updates the formula in [`RensHoogendam/homebrew-tap`](https://github.com/RensHoogendam/homebrew-tap), so `brew upgrade zsh-bw-keys` picks it up within ~20s. (Also create a GitHub Release for the tag if you want published notes.)
+
+**One-time setup:** the workflow needs a `HOMEBREW_TAP_TOKEN` repo secret — a fine-grained PAT scoped to **only** the `homebrew-tap` repo with **Contents: write** (the built-in `GITHUB_TOKEN` can't push to another repo). Without it the job skips cleanly.
