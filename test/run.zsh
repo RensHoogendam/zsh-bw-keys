@@ -153,6 +153,62 @@ recovered=$(PATH="$mock:$PATH" BW_SESSION=SEED zsh -fc "source '$PLUGIN'
   print \$SECRET_VAR")
 expect "precmd recovery loads a missing triggered var" "$recovered" "s3cr3t"
 
+# 17. A `bw get` that crashes on a server/runtime error (e.g. node-fetch
+#     closing the gzip stream early) is reported as a connectivity problem —
+#     NOT as a missing/empty vault item, which is what misled before.
+crashmock="$(mktemp -d)"
+cat > "$crashmock/bw" <<'MOCK'
+#!/usr/bin/env zsh
+[[ "$1" == "unlock" && "$2" == "--check" ]] && exit 0
+if [[ "$1" == "get" ]]; then
+  print -u2 "Unable to fetch ServerConfig FetchError: identity/connect/token: Premature close"
+  print -u2 "  errno: 'ERR_STREAM_PREMATURE_CLOSE'"
+  exit 1
+fi
+exit 1
+MOCK
+chmod +x "$crashmock/bw"
+crash=$(PATH="$crashmock:$PATH" BW_SESSION=SEED zsh -fc \
+  "source '$PLUGIN'; bw-key-register CRASH_VAR item-secret
+   _bw_keys_load_var CRASH_VAR; print \"rc=\$?\"" 2>&1)
+if [[ "$crash" == *"couldn't reach the server"* && "$crash" == *"rc=1"* \
+      && "$crash" != *"returned empty"* && "$crash" != *"not found"* ]]; then
+  pass "bw crash is reported as connectivity, not a bad item"
+else
+  fail "bw crash misreported (got: ${crash//$'\n'/ | })"
+fi
+
+# 18. A genuine "Not found" from bw is still reported as an item problem.
+nfmock="$(mktemp -d)"
+cat > "$nfmock/bw" <<'MOCK'
+#!/usr/bin/env zsh
+[[ "$1" == "unlock" && "$2" == "--check" ]] && exit 0
+[[ "$1" == "get" ]] && { print -u2 "Not found."; exit 1; }
+exit 1
+MOCK
+chmod +x "$nfmock/bw"
+nf=$(PATH="$nfmock:$PATH" BW_SESSION=SEED zsh -fc \
+  "source '$PLUGIN'; bw-key-register NF_VAR gone-item; _bw_keys_load_var NF_VAR" 2>&1)
+if [[ "$nf" == *"not found"* && "$nf" == *"gone-item"* ]]; then
+  pass "a real 'Not found' is reported as an item problem"
+else
+  fail "not-found misreported (got: ${nf//$'\n'/ | })"
+fi
+
+# 19. BW_KEYS_BW routes the CLI through a custom (multi-word) runtime/wrapper —
+#     the escape hatch for a broken bw/Node combo, no system change needed.
+ovr="$(mktemp -d)"
+cat > "$ovr/mybw" <<'MOCK'
+#!/usr/bin/env zsh
+[[ "$1" == "unlock" && "$2" == "--check" ]] && exit 0
+[[ "$1" == "get" && "$2" == "password" && "$3" == "item-secret" ]] && { print "via-override"; exit 0; }
+exit 1
+MOCK
+chmod +x "$ovr/mybw"
+got=$(BW_SESSION=SEED BW_KEYS_BW="/usr/bin/env $ovr/mybw" zsh -fc \
+  "source '$PLUGIN'; bw-key-register OVR_VAR item-secret; _bw_keys_load_var OVR_VAR; print \$OVR_VAR")
+expect "BW_KEYS_BW routes bw through a custom command" "$got" "via-override"
+
 print ""
 print "Result: $PASS passed, $FAIL failed"
 (( FAIL == 0 ))

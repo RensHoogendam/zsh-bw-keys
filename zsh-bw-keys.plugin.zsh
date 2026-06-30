@@ -29,6 +29,10 @@ typeset -gA _BW_KEYS_COLORS=(green '1;32' red '1;31' yellow '1;33' dim '2')
 #   BW_KEYS_NO_DISK_CACHE=1   # keep the session in this shell only, never on disk
 #                             # (no cross-terminal sharing)
 #   BW_KEYS_BIOMETRIC=1       # unlock via Touch ID (bwbio) — pairs well with a short TTL
+#   BW_KEYS_BW="node /path/bw" # override the bw invocation — run the CLI under a
+#                             # specific runtime/wrapper. Useful when a bw/Node
+#                             # combo crashes decoding the server's gzip responses
+#                             # (ERR_STREAM_PREMATURE_CLOSE). Defaults to `bw`.
 #
 # Core zsh modules backing the TTL: $EPOCHSECONDS and zstat (cached file's mtime).
 # Loading is a no-op when BW_KEYS_SESSION_TTL is unset.
@@ -41,6 +45,14 @@ _bw_keys_msg() {
   shift
   echo -e "\e[${_BW_KEYS_COLORS[$color]}m$*\e[0m" >&2
 }
+
+# Run the Bitwarden CLI. Honors BW_KEYS_BW so the CLI can be pinned to a specific
+# runtime or wrapper (e.g. an older Node when the current one crashes decoding
+# the server's gzip responses). The value is word-split, so a multi-word command
+# like "node /opt/homebrew/bin/bw" works; unset falls back to plain `bw`.
+_bw_keys_bw() { command ${=BW_KEYS_BW:-bw} "$@"; }
+# The first word of the configured command — what to existence-check / report.
+_bw_keys_bw_bin() { local -a c=(${=BW_KEYS_BW:-bw}); print -r -- "${c[1]}"; }
 
 # True only when there is a terminal to prompt on. Everything else — editor
 # tasks, background jobs, CI, and non-interactive snapshot shells (e.g. the one
@@ -216,7 +228,7 @@ _bw_keys_ensure_session() {
     unset BW_SESSION
   fi
 
-  command -v bw >/dev/null || {
+  command -v "$(_bw_keys_bw_bin)" >/dev/null || {
     # No terminal to prompt on → skip silently and let the command run anyway.
     _bw_keys_can_prompt || return 2
     _bw_keys_msg red "✗ Bitwarden CLI not installed (brew install bitwarden-cli)"
@@ -244,7 +256,7 @@ _bw_keys_ensure_session() {
   # process's argv where any same-UID process could read it (`ps` / `/proc`).
   local was_stale=0
   if [[ -n "${BW_SESSION:-}" ]]; then
-    if bw unlock --check >/dev/null 2>&1; then
+    if _bw_keys_bw unlock --check >/dev/null 2>&1; then
       _BW_KEYS_SESSION_OK=1
       # An inherited session (set in the env, not by us) has no known age —
       # stamp it now so the TTL clock starts from when this shell first saw it.
@@ -274,7 +286,7 @@ _bw_keys_ensure_session() {
   if [[ "${BW_KEYS_BIOMETRIC:-0}" == "1" ]] && command -v bwbio >/dev/null; then
     BW_SESSION="$(bwbio unlock --raw)" || return 1
   else
-    BW_SESSION="$(bw unlock --raw)" || return 1
+    BW_SESSION="$(_bw_keys_bw unlock --raw)" || return 1
   fi
   # A cancelled or no-op unlock can exit 0 with empty output — don't cache that.
   if [[ -z "$BW_SESSION" ]]; then
@@ -292,6 +304,48 @@ _bw_keys_ensure_session() {
   fi
 }
 
+# True if the haystack ($1) contains any of the remaining substrings.
+_bw_keys_err_has() {
+  local hay="$1"; shift
+  local needle
+  for needle in "$@"; do
+    [[ "$hay" == *"$needle"* ]] && return 0
+  done
+  return 1
+}
+
+# Print an accurate, actionable message for a failed `bw get`. bw's stderr
+# ($err) is matched against known signatures so a runtime/network crash — most
+# notably a newer Node + node-fetch closing the gzip stream early
+# (ERR_STREAM_PREMATURE_CLOSE) — isn't misreported as a missing/renamed item,
+# which is what the old blanket "Failed to load … from item" message did.
+_bw_keys_report_load_failure() {
+  local var_name="$1" item="$2" err="$3"
+  if _bw_keys_err_has "$err" 'Premature close' ERR_STREAM_PREMATURE_CLOSE \
+       FetchError 'Unable to fetch ServerConfig' ECONNRESET ETIMEDOUT \
+       ECONNREFUSED ENOTFOUND EAI_AGAIN ENETUNREACH 'socket hang up' \
+       'network timeout' 'self-signed certificate' 'unable to verify'; then
+    _bw_keys_msg red "✗ ${var_name}: Bitwarden CLI couldn't reach the server — not an item problem."
+    _bw_keys_msg dim "  'bw get ${item}' failed on a network/runtime error. Try 'bw sync', check the"
+    _bw_keys_msg dim "  server, or pin bw to a working runtime via BW_KEYS_BW (see the README)."
+  elif _bw_keys_err_has "$err" 'not logged in' 'You are not logged in' \
+         'Vault is locked' 'mac failed' 'Invalid master password'; then
+    _bw_keys_msg red "✗ ${var_name}: Bitwarden is locked or logged out — run 'bw-keys-clear', then retry to re-unlock."
+  elif _bw_keys_err_has "$err" 'More than one result' 'Multiple results'; then
+    _bw_keys_msg red "✗ ${var_name}: more than one Bitwarden item matches '${item}' — rename it or register its item ID."
+  elif _bw_keys_err_has "$err" 'Not found' 'No item' "Couldn't find"; then
+    _bw_keys_msg red "✗ ${var_name}: Bitwarden item '${item}' not found (renamed, deleted, or not synced?)."
+  else
+    _bw_keys_msg red "✗ Failed to load ${var_name} from Bitwarden item '${item}'"
+  fi
+  # Surface bw's own first error line for context — concise, and never the
+  # secret (that's on stdout, captured separately into $val).
+  if [[ -n "$err" ]]; then
+    local first="${err%%$'\n'*}"
+    [[ -n "$first" ]] && _bw_keys_msg dim "  ↳ ${first}"
+  fi
+}
+
 # Load one registered key into its env var (no-op if already set).
 _bw_keys_load_var() {
   local var_name="$1"
@@ -302,14 +356,23 @@ _bw_keys_load_var() {
   (( sess_rc == 2 )) && return 2   # no terminal to unlock on — propagate silently
   (( sess_rc != 0 )) && return 1
 
-  local val
-  val="$(bw get password "${_BW_KEY_ITEMS[$var_name]}" 2>/dev/null)" || {
-    _bw_keys_msg red "✗ Failed to load ${var_name} from Bitwarden item '${_BW_KEY_ITEMS[$var_name]}'"
-    return 1
-  }
+  # Capture bw's stderr (never the secret — that's on stdout, into $val) so a
+  # server/runtime failure can be reported as such instead of as a bad item.
+  local item="${_BW_KEY_ITEMS[$var_name]}"
+  local err_file val rc err=""
+  err_file="$(mktemp "${TMPDIR:-/tmp}/.bw_keys_err.XXXXXX" 2>/dev/null)"
+  if [[ -n "$err_file" ]]; then
+    val="$(_bw_keys_bw get password "$item" 2>"$err_file")"; rc=$?
+    [[ -r "$err_file" ]] && err="$(<"$err_file")"
+    rm -f "$err_file" 2>/dev/null
+  else
+    val="$(_bw_keys_bw get password "$item" 2>/dev/null)"; rc=$?
+  fi
+
+  (( rc != 0 )) && { _bw_keys_report_load_failure "$var_name" "$item" "$err"; return 1; }
 
   [[ -z "$val" ]] && {
-    _bw_keys_msg red "✗ ${var_name}: Bitwarden item '${_BW_KEY_ITEMS[$var_name]}' returned empty"
+    _bw_keys_msg red "✗ ${var_name}: Bitwarden item '${item}' returned empty"
     return 1
   }
 

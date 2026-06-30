@@ -67,6 +67,16 @@ If a command still manages to run without its key (cancelled unlock, wrapper byp
 
 The failed command is not re-run automatically — just run it again.
 
+### When a load fails
+
+If `bw` can't return a secret, the plugin reports *why* instead of blaming the item. It inspects `bw`'s own error and distinguishes:
+
+- **Can't reach the server** — a network or `bw`/Node runtime error (DNS, TLS, resets, or a crash such as `ERR_STREAM_PREMATURE_CLOSE` from a Node/node-fetch gzip incompatibility). The item is fine; the round-trip is broken. Try `bw sync`, check the server, or pin `bw` to a working runtime via [`BW_KEYS_BW`](#pinning-the-bw-runtime-bw_keys_bw).
+- **Locked / logged out** — run `bw-keys-clear`, then retry to re-unlock.
+- **Item not found / ambiguous** — the item was renamed, deleted, not synced, or matches more than one entry.
+
+The last line (`↳ …`) echoes `bw`'s own first error line for context. Secrets are never printed — they arrive on stdout, while only stderr is shown.
+
 ### Clearing the session cache
 
 ```zsh
@@ -88,6 +98,17 @@ export BW_KEYS_BIOMETRIC=1
 ```
 
 If `BW_KEYS_BIOMETRIC` is unset (or `bwbio` is missing), the plugin uses the regular `bw unlock` password prompt. When biometrics fail or are unavailable, `bwbio` itself falls back to a password prompt.
+
+## Pinning the bw runtime (`BW_KEYS_BW`)
+
+By default the plugin calls the `bw` on your `$PATH`. `BW_KEYS_BW` overrides that invocation — the value is word-split, so you can run the CLI under a specific runtime or wrapper:
+
+```zsh
+# Run bw under a known-good Node when the current one crashes on gzip responses
+export BW_KEYS_BW="$HOME/.volta/tools/image/node/22.20.0/bin/node $(command -v bw)"
+```
+
+This is the escape hatch for a broken `bw`/Node combination — e.g. a Homebrew upgrade that pairs a `bw` build with a Node version whose stream handling makes the bundled `node-fetch` abort gzipped responses (`ERR_STREAM_PREMATURE_CLOSE`). Pinning `bw` to a Node that works keeps secrets loading without downgrading your system Node (which other tools share). It applies to every `bw` call the plugin makes — session checks, unlocking, and reads. Leave it unset to use plain `bw`.
 
 ## Session security (optional)
 
